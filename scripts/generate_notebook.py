@@ -1,18 +1,30 @@
+import argparse
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from textwrap import dedent
 
 
 ROOT = Path(__file__).resolve().parents[1]
+_CELL_NUMBER = 0
+
+
+def _cell_id():
+    global _CELL_NUMBER
+    _CELL_NUMBER += 1
+    return f"datathon-{_CELL_NUMBER:03d}"
 
 
 def md(source):
-    return {"cell_type": "markdown", "metadata": {}, "source": dedent(source).strip().splitlines(True)}
+    return {"cell_type": "markdown", "id": _cell_id(), "metadata": {},
+            "source": dedent(source).strip().splitlines(True)}
 
 
 def code(source):
     return {
-        "cell_type": "code", "execution_count": None, "metadata": {},
+        "cell_type": "code", "id": _cell_id(), "execution_count": None, "metadata": {},
         "outputs": [], "source": dedent(source).strip().splitlines(True),
     }
 
@@ -47,6 +59,7 @@ cells = [
     import seaborn as sns
     from IPython.display import display
     from sklearn.inspection import permutation_importance
+    from sklearn.linear_model import LinearRegression
     from sklearn.metrics import (ConfusionMatrixDisplay, PrecisionRecallDisplay,
                                  RocCurveDisplay, classification_report)
 
@@ -55,7 +68,7 @@ cells = [
         ROOT = ROOT.parent
     sys.path.insert(0, str(ROOT / "src"))
     from data import FEATURES, load_panel, make_transitions
-    from train_model import train_and_save
+    from train_model import SEGMENTS, build_pipeline, select_threshold_oof
 
     warnings.filterwarnings("ignore")
     sns.set_theme(style="whitegrid", palette="viridis")
@@ -196,6 +209,30 @@ cells = [
                 ["IPP alto / IAN baixo", "IPP baixo / IAN alto"], default="outros"))
         print(year, discordance["caso"].value_counts())
     """),
+    code("""
+    # Antecedência psicossocial: tamanho de efeito padronizado, não apenas médias.
+    effects = []
+    for label, transition in [("2022→2023", train), ("2023→2024", test)]:
+        for outcome in ["queda_ida", "queda_ieg"]:
+            yes = transition.loc[transition[outcome], "ips"].dropna()
+            no = transition.loc[~transition[outcome], "ips"].dropna()
+            pooled = np.sqrt((yes.var(ddof=1) + no.var(ddof=1)) / 2)
+            effects.append({"transicao": label, "desfecho": outcome,
+                            "n_queda": len(yes), "n_sem_queda": len(no),
+                            "d_cohen": (yes.mean() - no.mean()) / pooled})
+    display(pd.DataFrame(effects).round(3))
+
+    # Comportamentos atuais associados ao IPV do ano seguinte (2023→2024).
+    predictors = ["ida", "ieg", "iaa", "ips", "ipp"]
+    longitudinal = test.dropna(subset=predictors + ["ipv_seguinte"]).copy()
+    Xz = (longitudinal[predictors] - longitudinal[predictors].mean()) / longitudinal[predictors].std()
+    yz = (longitudinal.ipv_seguinte - longitudinal.ipv_seguinte.mean()) / longitudinal.ipv_seguinte.std()
+    ipv_model = LinearRegression().fit(Xz, yz)
+    display(pd.DataFrame({"indicador_atual": predictors,
+                          "coeficiente_padronizado": ipv_model.coef_})
+            .sort_values("coeficiente_padronizado", key=abs,
+                         ascending=False).round(3))
+    """),
     md("## 4. Pergunta 8 — multidimensionalidade e INDE"),
     code("""
     features_multi = ["ida","ieg","ips","ipp"]
@@ -229,32 +266,80 @@ cells = [
     Ausências são tratadas dentro do pipeline, depois da separação.
     """),
     code("""
-    metrics = train_and_save()
-    display(pd.DataFrame(metrics).T)
-    bundle = joblib.load(ROOT / "artifacts" / "risk_model.joblib")
-    model, threshold = bundle["pipeline"], bundle["threshold"]
-    probability = model.predict_proba(test[FEATURES])[:, 1]
-    prediction = probability >= threshold
-    print(classification_report(test.risco_seguinte, prediction, digits=3))
+    # Reprodução do teste sem sobrescrever os artefatos de produção.
+    predictions = []
+    fitted = {}
+    for segment, config in SEGMENTS.items():
+        train_s = train.loc[config["filter"](train)].copy()
+        test_s = test.loc[config["filter"](test)].copy()
+        threshold, _ = select_threshold_oof(
+            train_s[FEATURES], train_s.risco_seguinte)
+        model = build_pipeline().fit(train_s[FEATURES], train_s.risco_seguinte)
+        probability = model.predict_proba(test_s[FEATURES])[:, 1]
+        part = test_s[["RA", "risco_seguinte"]].copy()
+        part["segmento"] = segment
+        part["probabilidade"] = probability
+        part["predicao"] = probability >= threshold
+        predictions.append(part)
+        fitted[segment] = model
+        print(f"\\n{segment.upper()} | limiar OOF={threshold:.3f}")
+        print(classification_report(test_s.risco_seguinte, part.predicao, digits=3))
+
+    scored_test = pd.concat(predictions).sort_index()
+    print("RESULTADO TEMPORAL AGREGADO")
+    print(classification_report(scored_test.risco_seguinte,
+                                scored_test.predicao, digits=3))
     fig, ax = plt.subplots(1, 3, figsize=(16, 4))
-    RocCurveDisplay.from_predictions(test.risco_seguinte, probability, ax=ax[0])
-    PrecisionRecallDisplay.from_predictions(test.risco_seguinte, probability, ax=ax[1])
-    ConfusionMatrixDisplay.from_predictions(test.risco_seguinte, prediction, ax=ax[2])
+    RocCurveDisplay.from_predictions(scored_test.risco_seguinte,
+                                     scored_test.probabilidade, ax=ax[0])
+    PrecisionRecallDisplay.from_predictions(scored_test.risco_seguinte,
+                                             scored_test.probabilidade, ax=ax[1])
+    ConfusionMatrixDisplay.from_predictions(scored_test.risco_seguinte,
+                                             scored_test.predicao, ax=ax[2])
     plt.show()
     """),
     md("""
-    **Resposta 9.** No teste temporal 2023→2024, o modelo alcança ROC-AUC ≈0,822,
-    PR-AUC ≈0,774, recall ≈78,6%, precisão ≈61,7% e F1 ≈0,691. O limiar de
-    aproximadamente 30,5% privilegia recall para não deixar alunos vulneráveis
-    sem sinalização. Falsos positivos significam revisão pedagógica adicional,
+    **Resposta 9.** No teste temporal 2023→2024, a avaliação agregada dos
+    modelos de entrada e permanência alcança ROC-AUC ≈0,810, recall ≈77,9%,
+    precisão ≈60,2% e F1 ≈0,679. Para alunos atualmente adequados, o modelo
+    estima especificamente a entrada em defasagem; para os já defasados, estima
+    permanência. Os limiares são escolhidos por previsões out-of-fold, sem usar o
+    teste temporal. Falsos positivos significam revisão pedagógica adicional,
     não punição.
     """),
     code("""
-    importance = pd.read_csv(ROOT / "artifacts" / "feature_importance.csv").head(20)
+    importance = pd.read_csv(ROOT / "artifacts" / "feature_importance.csv")
+    importance = (importance.sort_values("abs_coefficient", ascending=False)
+                  .groupby("segmento", as_index=False).head(10))
     display(importance)
-    sns.barplot(data=importance.head(15), y="feature", x="coefficient")
+    sns.barplot(data=importance, y="feature", x="coefficient", hue="segmento")
     plt.axvline(0, color="black", lw=1); plt.title("Coeficientes do modelo")
     plt.show()
+    """),
+    code("""
+    comparison = pd.read_csv(ROOT / "artifacts" / "model_comparison.csv")
+    display(comparison.round(3))
+    sns.barplot(data=comparison, x="modelo", y="roc_auc_oof", hue="segmento")
+    plt.ylim(.45, 1); plt.title("Comparação de modelos em validação out-of-fold")
+    plt.xticks(rotation=15); plt.show()
+
+    # A regressão logística é mantida por transparência e melhor Brier/PR-AUC
+    # no conjunto, apesar da pequena vantagem de ROC-AUC da floresta em permanência.
+    """),
+    code("""
+    calibration = pd.read_csv(ROOT / "artifacts" / "calibration.csv")
+    display(calibration.round(3))
+    sns.scatterplot(data=calibration, x="probabilidade_media",
+                    y="frequencia_observada", hue="segmento", size="n")
+    plt.plot([0, 1], [0, 1], "--", color="gray")
+    plt.xlim(0, 1); plt.ylim(0, 1); plt.title("Calibração no teste temporal")
+    plt.show()
+    """),
+    code("""
+    subgroup = pd.read_csv(ROOT / "artifacts" / "subgroup_metrics.csv")
+    display(subgroup.round(3))
+    print("Diferenças de recall e falso-positivo exigem monitoramento; "
+          "não representam, isoladamente, discriminação causal.")
     """),
     md("## 6. Pergunta 10 — efetividade do programa"),
     code("""
@@ -269,6 +354,22 @@ cells = [
                          "%_melhorou":100*(delta>0).mean()})
     display(pd.DataFrame(rows).pivot(index="indicador", columns="transicao",
                                      values="delta_medio").round(3))
+
+    # Evolução das coortes pareadas segundo a Pedra no início da transição.
+    stone_rows = []
+    for a, b in [(2022, 2023), (2023, 2024)]:
+        cols = ["RA", "pedra", "ida", "ieg", "inde", "defasagem"]
+        m = years[a][cols].merge(years[b][cols], on="RA",
+                                  suffixes=("_antes", "_depois"))
+        for stone, group in m.groupby("pedra_antes"):
+            stone_rows.append({
+                "transicao": f"{a}→{b}", "pedra_inicial": stone, "n": len(group),
+                "delta_IDA": (group.ida_depois-group.ida_antes).mean(),
+                "delta_IEG": (group.ieg_depois-group.ieg_antes).mean(),
+                "delta_INDE": (group.inde_depois-group.inde_antes).mean(),
+                "delta_defasagem": (group.defasagem_depois-group.defasagem_antes).mean(),
+            })
+    display(pd.DataFrame(stone_rows).round(3))
     """),
     md("""
     **Resposta 10.** Há sinais favoráveis em adequação: entre alunos pareados, a
@@ -318,3 +419,23 @@ target = ROOT / "notebooks" / "analise_risco_defasagem.ipynb"
 target.parent.mkdir(exist_ok=True)
 target.write_text(json.dumps(notebook, ensure_ascii=False, indent=1), encoding="utf-8")
 print(target)
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--execute", action="store_true",
+                    help="Executa o notebook e salva os outputs no mesmo arquivo.")
+args = parser.parse_args()
+if args.execute:
+    execution_env = os.environ.copy()
+    execution_env.update({
+        "IPYTHONDIR": str(ROOT / ".ipython"),
+        "JUPYTER_DATA_DIR": str(ROOT / ".jupyter_data"),
+        "JUPYTER_CONFIG_DIR": str(ROOT / ".jupyter_config"),
+        "JUPYTER_RUNTIME_DIR": str(ROOT / ".jupyter_runtime"),
+        "MPLCONFIGDIR": str(ROOT / ".matplotlib"),
+    })
+    subprocess.run([
+        sys.executable, "-m", "nbconvert", "--to", "notebook",
+        "--execute", str(target), "--output", target.name,
+        "--output-dir", str(target.parent),
+        "--ExecutePreprocessor.timeout=300",
+    ], check=True, cwd=ROOT, env=execution_env)

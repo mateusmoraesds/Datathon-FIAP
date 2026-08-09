@@ -29,8 +29,8 @@ def load_data():
 
 
 bundle = load_model()
-pipeline = bundle["pipeline"]
-threshold = bundle["threshold"]
+models = bundle["production_models"]
+thresholds = bundle["thresholds"]
 panel, years = load_data()
 with open(ROOT / "artifacts" / "metrics.json", encoding="utf-8") as file:
     metrics = json.load(file)
@@ -42,9 +42,12 @@ with st.sidebar:
     st.header("Sobre o modelo")
     st.write("Estima a chance de o aluno apresentar defasagem (fase atual abaixo "
              "da fase ideal) no ano seguinte.")
-    st.metric("ROC-AUC temporal", f"{metrics['test']['roc_auc']:.3f}")
-    st.metric("Recall temporal", f"{metrics['test']['recall']:.1%}")
+    st.metric("ROC-AUC temporal",
+              f"{metrics['overall_temporal_test']['roc_auc']:.3f}")
+    st.metric("Recall temporal",
+              f"{metrics['overall_temporal_test']['recall']:.1%}")
     st.caption("Treino: 2022→2023 · teste: 2023→2024")
+    st.caption("Produção 2025: reajuste com as duas transições disponíveis")
     st.warning("Use como apoio à equipe pedagógica. Não substitui avaliação humana.")
     with st.expander("Glossário oficial"):
         st.markdown("""
@@ -79,11 +82,11 @@ with tab1:
     left, right = st.columns(2)
     left.plotly_chart(px.line(yearly, x="ano", y=["ida", "ieg", "inde"],
                               markers=True, title="Evolução dos indicadores médios"),
-                      use_container_width=True)
+                      width="stretch")
     right.plotly_chart(px.bar(yearly, x="ano", y="defasagem",
                              title="Percentual de alunos com defasagem",
                              labels={"defasagem": "% em defasagem"}),
-                       use_container_width=True)
+                       width="stretch")
     st.info("A prevalência de defasagem cai de 69,8% (2022) para 46,2% (2024). "
             "A composição da base muda entre os anos; portanto, isso é evidência "
             "descritiva, não uma estimativa causal do impacto do programa.")
@@ -99,7 +102,7 @@ with tab2:
         fase_num = a.number_input("Fase (ALFA = 0)", 0, 8, 2)
         genero = a.selectbox("Gênero", ["Feminino", "Masculino", "Outro"])
         instituicao = b.selectbox("Instituição de ensino",
-                                  ["Publica", "Rede Decisao", "Privada", "Outra"])
+                                  ["Publica", "Privada", "Rede Decisao", "Outra"])
         iaa = b.slider("IAA — autoavaliação", 0.0, 10.0, 7.0, 0.1)
         ieg = b.slider("IEG — engajamento", 0.0, 10.0, 7.0, 0.1)
         ips = b.slider("IPS — psicossocial", 0.0, 10.0, 7.0, 0.1)
@@ -117,18 +120,30 @@ with tab2:
             "defasagem": defasagem, "genero": genero,
             "instituicao": instituicao,
         }])[FEATURES]
-        probability = pipeline.predict_proba(row)[0, 1]
-        label = "Priorizar acompanhamento" if probability >= threshold else "Acompanhamento regular"
-        st.metric("Probabilidade estimada", f"{probability:.1%}", label)
+        segment = "entrada" if defasagem >= 0 else "permanencia"
+        probability = models[segment].predict_proba(row)[0, 1]
+        threshold = thresholds[segment]
+        label = ("Priorizar acompanhamento" if probability >= threshold
+                 else "Acompanhamento regular")
+        outcome = ("entrar em defasagem" if segment == "entrada"
+                   else "permanecer em defasagem")
+        st.metric(f"Probabilidade de {outcome}", f"{probability:.1%}", label)
         st.progress(float(probability))
         st.caption(f"Limiar operacional: {threshold:.1%}. A probabilidade é uma "
                    "estimativa populacional e deve ser interpretada com contexto.")
 
 with tab3:
     scored = years[2024].copy()
-    scored["probabilidade_risco_2025"] = pipeline.predict_proba(scored[FEATURES])[:, 1]
-    scored["prioridade"] = np.where(
-        scored["probabilidade_risco_2025"] >= threshold, "Priorizar", "Regular")
+    scored["segmento"] = np.where(scored["defasagem"] < 0,
+                                   "permanencia", "entrada")
+    scored["probabilidade_risco_2025"] = np.nan
+    scored["prioridade"] = "Regular"
+    for segment in ("entrada", "permanencia"):
+        mask = scored["segmento"] == segment
+        probability = models[segment].predict_proba(scored.loc[mask, FEATURES])[:, 1]
+        scored.loc[mask, "probabilidade_risco_2025"] = probability
+        scored.loc[mask, "prioridade"] = np.where(
+            probability >= thresholds[segment], "Priorizar", "Regular")
     f1, f2 = st.columns(2)
     phase_options = sorted(scored["Fase"].dropna().astype(str).unique())
     phases = f1.multiselect("Filtrar fase", phase_options, default=phase_options)
@@ -138,8 +153,8 @@ with tab3:
                   & scored["prioridade"].isin(priority)].sort_values(
                       "probabilidade_risco_2025", ascending=False)
     st.dataframe(view[["RA", "Fase", "Turma", "ida", "ieg", "ips", "ipv",
-                       "ian", "defasagem", "probabilidade_risco_2025",
-                       "prioridade"]], use_container_width=True,
+                       "ian", "defasagem", "segmento", "probabilidade_risco_2025",
+                       "prioridade"]], width="stretch",
                  column_config={"probabilidade_risco_2025":
                                 st.column_config.ProgressColumn(
                                     "Risco estimado", min_value=0, max_value=1,
@@ -158,11 +173,19 @@ with tab4:
     st.plotly_chart(px.scatter(data, x=x, y=y, color=color, trendline="ols",
                                hover_data=["RA"],
                                title=f"{x.upper()} × {y.upper()} — {year}"),
-                    use_container_width=True)
+                    width="stretch")
     correlations = data[["iaa", "ieg", "ips", "ipp", "ida", "ipv", "ian", "inde"]].corr()
     st.plotly_chart(px.imshow(correlations, text_auto=".2f",
                              color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
                              title="Correlação entre indicadores"),
-                    use_container_width=True)
+                    width="stretch")
+    calibration = pd.read_csv(ROOT / "artifacts" / "calibration.csv")
+    st.plotly_chart(px.scatter(
+        calibration, x="probabilidade_media", y="frequencia_observada",
+        color="segmento", size="n", range_x=[0, 1], range_y=[0, 1],
+        title="Calibração no teste temporal",
+        labels={"probabilidade_media": "Probabilidade média",
+                "frequencia_observada": "Frequência observada"}),
+        width="stretch")
     st.caption("Correlação descreve associação, não causalidade. Consulte o notebook "
                "para as respostas detalhadas às 11 perguntas e a metodologia.")

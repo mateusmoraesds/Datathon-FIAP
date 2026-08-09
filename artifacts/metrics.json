@@ -1,49 +1,145 @@
 {
-  "definition": "Risco = defasagem no ano seguinte menor que zero.",
-  "train_period": "2022 -> 2023",
-  "test_period": "2023 -> 2024",
-  "train": {
-    "roc_auc": 0.8603638316753071,
-    "pr_auc": 0.909020573067496,
-    "brier": 0.14816570738220453,
-    "balanced_accuracy": 0.7058287795992714,
-    "precision": 0.731404958677686,
-    "recall": 0.9672131147540983,
-    "f1": 0.8329411764705882,
-    "confusion_matrix": [
-      [
-        104,
-        130
-      ],
-      [
-        12,
-        354
-      ]
-    ],
-    "threshold": 0.30500000000000005,
-    "n": 600,
-    "prevalence": 0.61
+  "definition": {
+    "entrada": "Entrar em defasagem partindo de situação adequada.",
+    "permanencia": "Permanecer em defasagem no ano seguinte."
   },
-  "test": {
-    "roc_auc": 0.8215067208502658,
-    "pr_auc": 0.7735166873111476,
-    "brier": 0.16989230525891857,
-    "balanced_accuracy": 0.728743357299156,
-    "precision": 0.6173469387755102,
-    "recall": 0.7857142857142857,
-    "f1": 0.6914285714285714,
+  "evaluation_design": "Treino 2022->2023; teste temporal 2023->2024.",
+  "threshold_selection": "Probabilidades out-of-fold, StratifiedKFold(5).",
+  "sklearn_version": "1.8.0",
+  "overall_temporal_test": {
+    "roc_auc": 0.8099690244110376,
+    "pr_auc": 0.7597036366794968,
+    "brier": 0.18018898450567122,
+    "balanced_accuracy": 0.7156497769189236,
+    "precision": 0.6015037593984962,
+    "recall": 0.7792207792207793,
+    "f1": 0.6789250353606789,
     "confusion_matrix": [
       [
-        307,
-        150
+        298,
+        159
       ],
       [
-        66,
-        242
+        68,
+        240
       ]
     ],
-    "threshold": 0.30500000000000005,
+    "thresholds": {
+      "entrada": 0.29000000000000004,
+      "permanencia": 0.28
+    },
     "n": 765,
     "prevalence": 0.40261437908496733
+  },
+  "segments": {
+    "entrada": {
+      "description": "Entrar em defasagem partindo de situação adequada.",
+      "oof_train": {
+        "roc_auc": 0.80671834625323,
+        "pr_auc": 0.6246880832142127,
+        "brier": 0.16345766908794956,
+        "balanced_accuracy": 0.75,
+        "precision": 0.5376344086021505,
+        "recall": 0.8333333333333334,
+        "f1": 0.6535947712418301,
+        "confusion_matrix": [
+          [
+            86,
+            43
+          ],
+          [
+            10,
+            50
+          ]
+        ],
+        "thresholds": {
+          "entrada": 0.29000000000000004
+        },
+        "n": 189,
+        "prevalence": 0.31746031746031744
+      },
+      "temporal_test": {
+        "roc_auc": 0.8347902097902098,
+        "pr_auc": 0.61561120477579,
+        "brier": 0.1380836797077304,
+        "balanced_accuracy": 0.6765318015318016,
+        "precision": 0.5967741935483871,
+        "recall": 0.44047619047619047,
+        "f1": 0.5068493150684932,
+        "confusion_matrix": [
+          [
+            261,
+            25
+          ],
+          [
+            47,
+            37
+          ]
+        ],
+        "thresholds": {
+          "entrada": 0.29000000000000004
+        },
+        "n": 370,
+        "prevalence": 0.22702702702702704
+      }
+    },
+    "permanencia": {
+      "description": "Permanecer em defasagem no ano seguinte.",
+      "oof_train": {
+        "roc_auc": 0.8055399937752878,
+        "pr_auc": 0.9300676654585455,
+        "brier": 0.1507638264197829,
+        "balanced_accuracy": 0.5300653594771242,
+        "precision": 0.7562189054726368,
+        "recall": 0.9934640522875817,
+        "f1": 0.8587570621468926,
+        "confusion_matrix": [
+          [
+            7,
+            98
+          ],
+          [
+            2,
+            304
+          ]
+        ],
+        "thresholds": {
+          "permanencia": 0.28
+        },
+        "n": 411,
+        "prevalence": 0.7445255474452555
+      },
+      "temporal_test": {
+        "roc_auc": 0.7270781119465329,
+        "pr_auc": 0.8126950769098957,
+        "brier": 0.2196293965948816,
+        "balanced_accuracy": 0.5613121345029239,
+        "precision": 0.6023738872403561,
+        "recall": 0.90625,
+        "f1": 0.7237076648841355,
+        "confusion_matrix": [
+          [
+            37,
+            134
+          ],
+          [
+            21,
+            203
+          ]
+        ],
+        "thresholds": {
+          "permanencia": 0.28
+        },
+        "n": 395,
+        "prevalence": 0.5670886075949367
+      }
+    }
+  },
+  "production": {
+    "training_data": "Transicoes 2022->2023 e 2023->2024",
+    "thresholds": {
+      "entrada": 0.35,
+      "permanencia": 0.33
+    }
   }
 }

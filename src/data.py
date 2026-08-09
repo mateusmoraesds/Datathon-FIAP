@@ -14,6 +14,32 @@ def _ascii(text):
     return unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode()
 
 
+def _canonical_gender(value):
+    if pd.isna(value):
+        return np.nan
+    text = _ascii(value).strip().lower()
+    if text in {"menina", "feminino", "feminina"}:
+        return "Feminino"
+    if text in {"menino", "masculino", "masculina"}:
+        return "Masculino"
+    return "Outro"
+
+
+def _canonical_institution(value):
+    if pd.isna(value):
+        return np.nan
+    text = _ascii(value).strip().lower()
+    if not text or text == "nan":
+        return np.nan
+    if "decisao" in text:
+        return "Rede Decisao"
+    if "public" in text:
+        return "Publica"
+    if any(token in text for token in ("privad", "bols", "apadrinh", "parceir")):
+        return "Privada"
+    return "Outra"
+
+
 def _num(series):
     # Os CSVs misturam valores já inferidos como float (ex.: "12.0") e
     # decimais brasileiros em texto (ex.: "7,5"). Não remover pontos evita
@@ -41,9 +67,8 @@ def load_year(year, data_dir=DATA_DIR):
     df["fase_num"] = df["Fase"].map(_phase_number)
     df["idade"] = _num(df["Idade 22"] if year == 2022 else df["Idade"])
     df["anos_programa"] = year - _num(df["Ano ingresso"])
-    df["genero"] = df["Gênero"].map(lambda x: _ascii(x).strip().title())
-    df["instituicao"] = df["Instituição de ensino"].map(
-        lambda x: _ascii(x).strip().title())
+    df["genero"] = df["Gênero"].map(_canonical_gender)
+    df["instituicao"] = df["Instituição de ensino"].map(_canonical_institution)
     rename = {
         "IAA": "iaa", "IEG": "ieg", "IPS": "ips", "IPP": "ipp",
         "IDA": "ida", "IPV": "ipv", "IAN": "ian",
@@ -72,13 +97,22 @@ FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
 
 def make_transition(current, following):
-    target = following[["RA", "defasagem", "ida", "ieg"]].rename(columns={
+    target = following[["RA", "defasagem", "ida", "ieg", "ipv"]].rename(columns={
         "defasagem": "defasagem_seguinte",
         "ida": "ida_seguinte",
         "ieg": "ieg_seguinte",
+        "ipv": "ipv_seguinte",
     })
     out = current.merge(target, on="RA", how="inner")
     out["risco_seguinte"] = (out["defasagem_seguinte"] < 0).astype(int)
+    out["situacao_atual"] = np.where(out["defasagem"] < 0,
+                                      "defasado", "adequado")
+    out["entrada_defasagem"] = (
+        (out["defasagem"] >= 0) & (out["defasagem_seguinte"] < 0)
+    ).astype(int)
+    out["permanencia_defasagem"] = (
+        (out["defasagem"] < 0) & (out["defasagem_seguinte"] < 0)
+    ).astype(int)
     out["queda_ida"] = out["ida_seguinte"] < (out["ida"] - 0.5)
     out["queda_ieg"] = out["ieg_seguinte"] < (out["ieg"] - 0.5)
     return out
