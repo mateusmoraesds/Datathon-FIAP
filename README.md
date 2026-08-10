@@ -48,14 +48,3 @@ campos somente até 2022, a equivalência semântica das colunas homônimas de
 
 Gênero e tipo de instituição são harmonizados entre as nomenclaturas dos três
 anos antes do treino e da inferência.
-
-## Deploy no Streamlit Community Cloud
-
-1. Publique este repositório no GitHub.
-2. Acesse o Streamlit Community Cloud e selecione **Create app**.
-3. Escolha o repositório, a branch e informe `app.py` como arquivo principal.
-4. Confirme o deploy. Não há secrets necessários.
-
-Os CSVs e `artifacts/risk_model.joblib` precisam estar versionados no
-repositório. Dados anonimizados ainda devem seguir a política de acesso da
-organização.
